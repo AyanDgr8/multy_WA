@@ -1,18 +1,54 @@
 // index.js
-
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const express = require('express');
 const qrcode = require('qrcode');
 const bodyParser = require('body-parser');
+const mysql = require('mysql2/promise');
 const fs = require('fs');
 const path = require('path');
+const fileUpload = require('express-fileupload');
+const csvParser = require('csv-parser');
+
+
 const app = express();
-const PORT = process.env.PORT || 2000;
+const PORT = process.env.PORT || 9999;
 
 // Middleware to parse URL-encoded form data
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(fileUpload());
 
 let instances = {}; // Store sockets for multiple instances
+
+// Database configuration
+const dbConfig = {
+    host: 'localhost',
+    user: 'root',
+    password: 'Ayan@1012',
+    database: 'multyWhatsapp',
+};
+
+// Function to save instance to database
+async function saveInstanceToDB(instanceId, status) {
+    const connection = await mysql.createConnection(dbConfig);
+    const query = `INSERT INTO instances (instance_id, status, created_at)
+    VALUES (?, ?, NOW())
+    ON DUPLICATE KEY UPDATE status = ?, updated_at = NOW();`;
+
+    await connection.execute(query, [instanceId, status, status]);
+    await connection.end();
+}
+
+// Function to log sent messages to database
+async function logMessageToDB(instanceId, numbers, message, status) {
+    const connection = await mysql.createConnection(dbConfig);
+    const query = `INSERT INTO messages (instance_id, recipient, message, status, sent_at)
+    VALUES (?, ?, ?, ?, NOW());`;
+
+    for (const number of numbers) {
+        await connection.execute(query, [instanceId, number, message, status]);
+    }
+    await connection.end();
+}
 
 // Function to initialize WhatsApp connection for a specific instance
 async function initializeSock(instanceId) {
@@ -30,41 +66,120 @@ async function initializeSock(instanceId) {
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, qr } = update;
+    sock.ev.on('connection.update', async (update) => {
+    const { connection, qr } = update;
 
-        if (qr) {
-            qrcode.toDataURL(qr, (err, url) => {
-                if (err) console.error(`Error generating QR Code for instance ${instanceId}:`, err);
-                else {
-                    console.log(`QR Code for instance ${instanceId} generated!`);
-                    instances[instanceId].qrCode = url;
-                    instances[instanceId].isAuthenticated = false;
-                }
-            });
-        }
+    if (qr) {
+        qrcode.toDataURL(qr, (err, url) => {
+            if (err) console.error(`Error generating QR Code for instance ${instanceId}:`, err);
+            else {
+            console.log(`QR Code for instance ${instanceId} generated!`);
+            instances[instanceId].qrCode = url;
+            instances[instanceId].isAuthenticated = false;
+            }
+        });
+    }
 
-        if (connection === 'close') {
-            const shouldReconnect = update.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(`Instance ${instanceId}: Connection closed. Reconnecting: ${shouldReconnect}`);
-            if (shouldReconnect) initializeSock(instanceId);
-        } else if (connection === 'open') {
-            console.log(`Instance ${instanceId}: Connected to WhatsApp!`);
-            instances[instanceId].isAuthenticated = true;
-            // Redirect to the send page after authentication
-            app.get(`/${instanceId}/send`, (req, res) => {
-                res.redirect(`/${instanceId}/send`);
-            });
+    if (connection === 'close') {
+        const shouldReconnect = update.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        console.log(`Instance ${instanceId}: Connection closed. Reconnecting: ${shouldReconnect}`);
+        if (shouldReconnect) initializeSock(instanceId);
+        await saveInstanceToDB(instanceId, 'disconnected');
+        } 
+        else if (connection === 'open') {
+        console.log(`Instance ${instanceId}: Connected to WhatsApp!`);
+        instances[instanceId].isAuthenticated = true;
+        await saveInstanceToDB(instanceId, 'connected');
         }
     });
 
     instances[instanceId] = { sock, qrCode: null, isAuthenticated: false };
 }
 
+// Function to save CSV data into the database
+async function saveCSVDataToDB(instanceId, csvData) {
+    const connection = await mysql.createConnection(dbConfig);
+    const query = `
+        INSERT INTO scheduled_messages (instance_id, recipient, message, schedule_time)
+        VALUES (?, ?, ?, ?)
+    `;
+    for (const row of csvData) {
+        const { recipient, message, schedule_time } = row;
+        await connection.execute(query, [instanceId, recipient, message, schedule_time]);
+    }
+    await connection.end();
+}
+
+// Endpoint to upload CSV file
+app.post('/:instanceId/upload-csv', async (req, res) => {
+    const instanceId = req.params.instanceId;
+
+    if (!req.files || !req.files.csvFile) {
+        return res.status(400).send('No CSV file uploaded.');
+    }
+
+    const file = req.files.csvFile;
+    const filePath = path.join(__dirname, 'uploads', file.name);
+
+    // Save uploaded file temporarily
+    if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
+    await file.mv(filePath);
+
+    // Parse CSV file
+    const csvData = [];
+    fs.createReadStream(filePath)
+        .pipe(csvParser())
+        .on('data', (row) => csvData.push(row))
+        .on('end', async () => {
+            await saveCSVDataToDB(instanceId, csvData);
+            fs.unlinkSync(filePath); // Delete file after processing
+            res.send('Contacts and messages saved to the database successfully!');
+        });
+});
+
+// Function to send scheduled messages
+async function sendScheduledMessages() {
+    const connection = await mysql.createConnection(dbConfig);
+
+    // Fetch pending messages scheduled for delivery
+    const [rows] = await connection.execute(
+        `SELECT * FROM scheduled_messages WHERE status = 'pending' AND schedule_time <= NOW()`
+    );
+
+    for (const message of rows) {
+        const instanceSock = instances[message.instance_id]?.sock;
+        if (!instanceSock) continue; // Skip if instance is not connected
+
+        try {
+            const jid = `${message.recipient}@s.whatsapp.net`;
+            await instanceSock.sendMessage(jid, { text: message.message });
+
+            // Update status to 'sent'
+            await connection.execute(
+                `UPDATE scheduled_messages SET status = 'sent' WHERE id = ?`,
+                [message.id]
+            );
+            console.log(`Message sent to ${message.recipient}`);
+        } catch (error) {
+            console.error(`Failed to send message to ${message.recipient}:`, error);
+            await connection.execute(
+                `UPDATE scheduled_messages SET status = 'failed' WHERE id = ?`,
+                [message.id]
+            );
+        }
+    }
+
+    await connection.end();
+}
+
+// Schedule the message sender to run every minute
+setInterval(sendScheduledMessages, 60000); // Check for messages every 1 minute
+
+
 // Endpoint to serve the QR code for a specific instance
 app.get('/:instanceId/qrcode', async (req, res) => {
     const instanceId = req.params.instanceId;
-    
+
     if (!instances[instanceId]) {
         console.log(`Initializing new instance: ${instanceId}`);
         await initializeSock(instanceId);
@@ -100,6 +215,10 @@ app.get('/:instanceId/qrcode', async (req, res) => {
     `;
 
     if (instances[instanceId] && instances[instanceId].qrCode) {
+        if (instances[instanceId].isAuthenticated) {
+            // If authenticated, redirect to send page
+            return res.redirect(`/${instanceId}/send`);
+        }
         res.send(`
             <div style="${bodyStyle}"></div>
             <div style="${containerStyle}">
@@ -140,7 +259,6 @@ app.post('/:instanceId/reset', async (req, res) => {
 app.get('/:instanceId/send', async (req, res) => {
     const instanceId = req.params.instanceId;
 
-
     const bodyStyle=`
         margin: 0;
         padding: 0;
@@ -148,7 +266,6 @@ app.get('/:instanceId/send', async (req, res) => {
         background-color: black;
         color:white;
     `;
-
     const containerStyle = `
         width: 60%;
         margin: 5rem auto;
@@ -161,7 +278,6 @@ app.get('/:instanceId/send', async (req, res) => {
         background-color: black;
         color:white;
     `;
-
     const headerStyle = `
         background-color: #364C63;
         color: white;
@@ -172,7 +288,6 @@ app.get('/:instanceId/send', async (req, res) => {
         letter-spacing: 1px;
         border-bottom: 3px solid #EF6F53;
     `;
-
     const formStyle = `
         margin-top: 20px; 
         padding: 20px; 
@@ -209,7 +324,6 @@ app.get('/:instanceId/send', async (req, res) => {
         margin:auto;
         margin-top: 20px;
     `;
-
     const uploadStyle= `
         position: fixed;
         top: 15px;
@@ -224,7 +338,6 @@ app.get('/:instanceId/send', async (req, res) => {
         cursor: pointer;
         width:10%;
     `;
-
 
     if (instances[instanceId]?.isAuthenticated) {
         res.send(`
@@ -268,14 +381,16 @@ app.post('/:instanceId/send-message', async (req, res) => {
         if (!instanceSock) throw new Error(`Instance ${instanceId} is not connected`);
 
         for (const number of phoneNumbers) {
-            const jid = `${number}@s.whatsapp.net`;
+        const jid = `${number}@s.whatsapp.net`;
             await instanceSock.sendMessage(jid, { text: message });
         }
 
+        await logMessageToDB(instanceId, phoneNumbers, message, 'success');
         res.send('Text messages sent successfully!');
     } catch (error) {
         console.error(`Failed to send text message for instance ${instanceId}:`, error);
-        res.status(500).send('Failed to send text message.');
+        await logMessageToDB(instanceId, phoneNumbers, message, 'failed');
+    res.status(500).send('Failed to send text message.');
     }
 });
 
