@@ -1,12 +1,17 @@
 {\rtf1\ansi\ansicpg1252\cocoartf2820
-\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica-Bold;\f1\fswiss\fcharset0 Helvetica-Light;\f2\fnil\fcharset0 AppleColorEmoji;
-\f3\froman\fcharset0 Times-Roman;}
-{\colortbl;\red255\green255\blue255;}
-{\*\expandedcolortbl;;}
-\paperw11900\paperh16840\margl1440\margr1440\vieww12800\viewh8400\viewkind0
-\pard\tx220\tx720\tx1440\tx2160\tx2880\tx3187\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\li720\fi-720\pardirnatural\partightenfactor0
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica-Bold;\f1\fswiss\fcharset0 Helvetica-Light;\f2\froman\fcharset0 Times-Bold;
+\f3\fnil\fcharset0 AppleColorEmoji;\f4\froman\fcharset0 Times-Roman;}
+{\colortbl;\red255\green255\blue255;\red0\green0\blue0;}
+{\*\expandedcolortbl;;\csgray\c0;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww9560\viewh8400\viewkind0
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
 
-\f0\b\fs48 \cf0 CREATE DATABASE multyWhatsapp;\
+\f0\b\fs40 \cf2 \CocoaLigature0 ssh root@139.84.166.108\cf0 \CocoaLigature1 \
+\pard\tx220\tx720\tx1440\tx2160\tx2880\tx3187\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\li720\fi-720\pardirnatural\partightenfactor0
+\cf0 =vJ7jG)\{RR=t3pAn\
+\
+
+\fs48 CREATE DATABASE multyWhatsapp;\
 \pard\tx220\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\li720\fi-720\pardirnatural\partightenfactor0
 \cf0 USE multyWhatsapp;\
 TABLE messages:
@@ -24,6 +29,7 @@ id INT AUTO_INCREMENT PRIMARY KEY,\
 instance_id VARCHAR(255),\
 recipient VARCHAR(255),\
 message TEXT,\
+media VARCHAR(255),\
 status ENUM('success', 'failed') NOT NULL,\
 sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\
 );\
@@ -33,40 +39,95 @@ id INT AUTO_INCREMENT PRIMARY KEY,\
 instance_id VARCHAR(255),\
 recipient VARCHAR(255),\
 message TEXT,\
+media VARCHAR(255),\
+caption VARCHAR(255),\
 schedule_time DATETIME,\
 status ENUM('pending', 'sent', 'failed') DEFAULT 'pending',\
 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\
 );\
+\
+\pard\pardeftab720\partightenfactor0
 
-\fs48 \
-Hi everyone, 
-\f2 \uc0\u55357 \u56395 \u55357 \u56395  
+\f2\b\fs56 \cf0 \expnd0\expndtw0\kerning0
+YYYY-MM-DD HH:mm:ss\
+
+\f1\b0\fs40 \kerning1\expnd0\expndtw0 \
+\pard\tx220\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\li720\fi-720\pardirnatural\partightenfactor0
+\cf0 INSERT INTO scheduled_messages (\
+    instance_id, \
+    recipient, \
+    message, \
+    schedule_time, \
+    status, \
+    created_at\
+) VALUES\
+    ('kaka', '918802247132', 'This is a scheduled message.', '2024-12-10 12:02:00', 'pending', NOW()),\
+    ('kaka', '919953615579', 'This is a scheduled message.', '2024-12-10 12:02:00', 'pending', NOW()),\
+    ('kaka', '918755119994', 'This is a scheduled message.', '2024-12-10 12:02:00', 'pending', NOW()),\
+    ('kaka', '918800154017', 'This is a scheduled message.', '2024-12-10 12:02:00', 'pending', NOW()),\
+    ('kaka', '918800522552', 'This is a scheduled message.', '2024-12-10 12:02:00', 'pending', NOW());\
+\pard\tx220\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\li720\fi-720\pardirnatural\partightenfactor0
+
+\fs48 \cf0 \
+
+\fs44 Hi everyone, 
+\f3 \uc0\u55357 \u56395 \u55357 \u56395  
 \f1 \
 As we move forward, I wish you all continued success, happiness, and fulfilment in your personal and professional lives. May this upcoming new year bring you joy, peace, and prosperity.  \
 Best wishes, \
 Ayan Khan\
-\
+
+\fs48 \
 Office: \
-+918800154017,+918802247132,+918755119994,+918299093393, +919810786928, +918287689998, +919953615579, +919811066504\
++918800154017,+918802247132,\
++918755119994,+918299093393, +919810786928, +918287689998, +919953615579, +919811066504\
 \
 Friends:+918920906864,+919311135955,+919868383418,+918851442131,+919821559705,+61493647480,+919911008806,+918178552420,+919911807512,+918800357821\
 \
 Family :\
 918800154017, 919818336786,918800154019,919910777851,919958097417, 919958097418,919871393036,917982123175, 919958726038\
 \
-+918800154017,+918802247132,+918755119994,+918299093393, +919810786928, +918287689998, +919953615579, +919811066504,+919810786928, +919818336786,+918800154019,+919910777851,+919958097417,+918920906864,+919311135955,+919868383418,+919810786928, +918851442131,+919821559705,+61493647480,+919911008806,+919810786928, +918178552420,+919911807512,+918800357821\
+     +918800154017,+918802247132,+918755119994,+918299093393, +919810786928, +918287689998, +919953615579, +919811066504,+919810786928,+919818336786,+918800154019,+919910777851, +919958097417, +918920906864, +919311135955,+919868383418,+919810786928, +918851442131,+919821559705, +61493647480, +919911008806, +919810786928, +918178552420, +919911807512, +918800357821\
 \
 Good Afternoon People 
-\f2 \uc0\u55358 \u57057 
+\f3 \uc0\u55358 \u57057 
 \f1  !!\
 Hope you are having a good day 
-\f2 \uc0\u55357 \u56908 
+\f3 \uc0\u55357 \u56908 
 \f1 \
 From MultyComm \
 \
 \
 \pard\pardeftab720\sa240\partightenfactor0
 
-\f3\fs24 \cf0 \expnd0\expndtw0\kerning0
+\f4\fs24 \cf0 \expnd0\expndtw0\kerning0
 Add a template  defined , like if im writing a message "hi \{\{f_name\}\}, im good .. your number is \{\{contact_num\}\}"... there should be a method for writing this text... firstly add two more fields f_name and l_name in the db... if the number associated with it contains the f_name and l_name it should fetch it accordingly .... like when a user is writing, "welcome to multycomm and then he presses @ then he gets three variables which are the values stored \{\{f_name\}\} \{\{l_name\}\} and \{\{contact_num\}\}.. which is stored in the same table\
+the eroor isnt getting shown neither the file is getting uploaded in the db ... the uploaded file should have got only four columns i.e., instance_id, recipient, message, schedule_time and their respective values , the data should get uploaded to the the db inisde the "scheduled_messages" table,and if the uploaded file doesnt not have schedule_time column then it should fetch the recipient vlaues and insert them into the following field in the /send function <input type="text" id="numbers" name="numbers" required style="$\{inputStyle\}">\
+// Function to save CSV data into the database with validation\
+async function saveCSVDataToDB(instanceId, csvData) \{\
+const validData = csvData.filter(validateCSVRow);\
+\
+if (validData.length === 0) \{\
+console.error('No valid data found in the uploaded CSV file.');\
+return;\
+\}\
+\
+const connection = await mysql.createConnection(dbConfig);\
+const query = `\
+INSERT INTO scheduled_messages (instance_id, recipient, message, schedule_time, status)\
+VALUES (?, ?, ?, ?, 'pending')\
+`;\
+\
+for (const row of validData) \{\
+const \{ recipient, message, schedule_time \} = row;\
+try \{\
+await connection.execute(query, [instanceId, recipient, message, schedule_time]);\
+\} catch (error) \{\
+console.error('Database Error:', error.message, 'Row:', row);\
+\}\
+\}\
+\
+await connection.end();\
+console.log('Valid CSV data saved to the database successfully.');\
+\}\
 }
