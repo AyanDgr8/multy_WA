@@ -1,6 +1,7 @@
 // index.js
 
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { prepareWAMessageMedia } = require('@adiwajshing/baileys'); // Example import
 const express = require('express');
 const qrcode = require('qrcode');
 const bodyParser = require('body-parser');
@@ -14,11 +15,12 @@ const fileUpload = require('express-fileupload');
 const csvParser = require('csv-parser');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
 const PORT = process.env.PORT || 9999;
 
 // Middleware to parse URL-encoded form data
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(fileUpload());
 
 let instances = {}; // Store sockets for multiple instances
@@ -111,7 +113,6 @@ async function logMediaMessageToDB(instanceId, numbers, message, mediaPath, capt
     }
     await connection.end();
 }
-
 
 // Function to send scheduled messages
 async function sendScheduledMessages() {
@@ -469,46 +470,66 @@ app.get('/:instanceId/post', async (req, res) => {
             <div style="${bodyStyle}">
                 <div style="${containerStyle}">
                     <h1 style="${headerStyle}">Schedule Message for Instance: ${instanceId}</h1>
-                    <form action="/${instanceId}/send-media" method="POST" enctype="multipart/form-data" style="${formStyle}">
+    
+                    <!-- Form to upload media -->
+                    <form id="uploadForm" enctype="multipart/form-data" style="${formStyle}">
+                        <label for="file" style="${labelStyle}">Upload Media File:</label>
+                        <input type="file" id="file" name="file" required style="${inputStyle}">
+                        <button type="button" id="uploadButton" style="${btnStyle}">Upload File</button>
+                        <p id="filePathDisplay"></p>
+                    </form>
+    
+                    <!-- Form to schedule message -->
+                    <form action="/${instanceId}/send-media" method="POST" enctype="application/x-www-form-urlencoded" style="${formStyle}">
                         <label for="numbers" style="${labelStyle}">Phone Numbers (comma separated):</label>
                         <input type="text" id="numbers" name="numbers" required style="${inputStyle}">
-    
+                        
                         <label for="message" style="${labelStyle}">Message:</label>
                         <textarea id="message" name="message" required style="${inputStyle}"></textarea>
-    
-                        <label for="mediaFile" style="${labelStyle}">Media File:</label>
-                        <input type="file" id="mediaFile" name="mediaFile" accept=".jpg,.jpeg,.png,.mp4,.avi,.pdf,.doc,.docx,.xls,.xlsx" required style="${inputStyle}">
-                        <button type="button" id="uploadButton" style="${btnStyle}">Upload File</button>
-                        <p id="fileNameDisplay"></p>
-    
-                        <label for <label for="caption" style="${labelStyle}">Caption (optional):</label>
+                        
+                        <label for="filePath" style="${labelStyle}">Media File Path:</label>
+                        <input type="text" id="filePath" name="filePath" readonly required style="${inputStyle}">
+                        
+                        <label for="caption" style="${labelStyle}">Caption (optional):</label>
                         <input type="text" id="caption" name="caption" style="${inputStyle}">
-    
+                        
                         <label for="schedule_time" style="${labelStyle}">Scheduled time (optional):</label>
                         <input type="datetime-local" id="schedule_time" name="schedule_time" style="${inputStyle}">
-    
+                        
                         <button type="submit" style="${btnStyle}">Schedule Message</button>
                     </form>
+    
                     <script>
-                        const mediaFileInput = document.getElementById('mediaFile');
+                        const uploadForm = document.getElementById('uploadForm');
+                        const fileInput = document.getElementById('file');
                         const uploadButton = document.getElementById('uploadButton');
-                        const fileNameDisplay = document.getElementById('fileNameDisplay');
+                        const filePathInput = document.getElementById('filePath');
+                        const filePathDisplay = document.getElementById('filePathDisplay');
     
-                        uploadButton.addEventListener('click', () => {
-                            mediaFileInput.click();
-                        });
+                        uploadButton.addEventListener('click', async () => {
+                            const formData = new FormData(uploadForm);
+                            try {
+                                const response = await fetch('/${instanceId}/upload-media', {
+                                    method: 'POST',
+                                    body: formData,
+                                });
     
-                        mediaFileInput.addEventListener('change', () => {
-                            const fileName = mediaFileInput.files[0]?.name || "No file selected";
-                            fileNameDisplay.textContent = "Selected File: " + fileName;
+                                if (!response.ok) {
+                                    throw new Error('Failed to upload file');
+                                }
+    
+                                const { filePath } = await response.json();
+                                filePathInput.value = filePath;
+                                filePathDisplay.textContent = "File uploaded successfully: " + filePath;
+                            } catch (error) {
+                                filePathDisplay.textContent = "Upload failed: " + error.message;
+                            }
                         });
                     </script>
-    
                 </div>
                 <div style="${footerStyle}">
                     Powered by MultyComm &copy; 2024
                 </div>
-    
             </div>
         `);
     } else {
@@ -521,92 +542,65 @@ app.get('/:instanceId/post', async (req, res) => {
     }
 }); 
 
-// ***************
-// Allowed extensions
 
+// Handle sending media messages
 
-// Allowed extensions
-const allowedExtensions = ['.jpg', '.jpeg', '.png', '.mp4', '.avi', '.pdf', '.doc', '.docx', '.xls', '.xlsx'];
+// Configure multer for file uploads
+const upload = multer({
+    dest: './uploads/media/',
+    limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB limit
+});
 
-const uploadDir = path.join(__dirname, './uploads/media/');
+// Endpoint for uploading the file
+app.post('/:instanceId/upload-media', upload.single('file'), async (req, res) => {
+    const uploadedFile = req.file;
 
-// Ensure the uploads directory exists
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+    if (!uploadedFile) {
+        return res.status(400).send('No file uploaded.');
+    }
+
+    const fileExtension = path.extname(uploadedFile.originalname).toLowerCase();
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.mp4', '.avi', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.mp3'];
+
+    if (!allowedExtensions.includes(fileExtension)) {
+        await fs.unlink(uploadedFile.path); // Remove the unsupported file
+        return res.status(400).send('Unsupported file format.');
+    }
+
+    const filePath = `uploads/media/${uploadedFile.filename}`;
+    res.json({ filePath });
+});
 
 // Handle sending media messages
 app.post('/:instanceId/send-media', async (req, res) => {
     const instanceId = req.params.instanceId;
-    const phoneNumbers = req.body.numbers.split(',').map((num) => num.trim());
-    const message = req.body.message || '';
+    const phoneNumbers = req.body.numbers.split(',').map(num => num.trim());
     const caption = req.body.caption || '';
-    
+    const filePath = req.body.filePath;
+
+    if (!filePath || !(await fs.stat(filePath).catch(() => false))) {
+        return res.status(400).send('Invalid or missing file path.');
+    }
+
+    const fileExtension = path.extname(filePath).toLowerCase();
     try {
-        // Busboy parser
-        const busboy = new Busboy({ headers: req.headers });
-        let uploadedFilePath = '';
+        const instanceSock = instances[instanceId]?.sock;
+        if (!instanceSock) throw new Error(`Instance ${instanceId} is not connected`);
 
-        busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
-            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-            const filepath = path.join(uploadDir, uniqueSuffix + path.extname(filename));
-            
-            uploadedFilePath = filepath;
-            
-            file.pipe(fs.createWriteStream(filepath));
-        });
+        const media = await prepareWAMessageMedia({ url: filePath }, { upload: instanceSock.upload });
+        const messagePayload = fileExtension === '.mp3' ? { audio: media, caption } :
+                               fileExtension === '.mp4' ? { video: media, caption } :
+                               { document: media, caption };
 
-        busboy.on('finish', async () => {
-            if (!uploadedFilePath) {
-                return res.status(400).send('No file uploaded.');
-            }
+        for (const number of phoneNumbers) {
+            const jid = `${number}@s.whatsapp.net`;
+            await instanceSock.sendMessage(jid, messagePayload);
+        }
 
-            // Validate the instance socket
-            const instanceSock = instances[instanceId]?.sock;
-            if (!instanceSock) throw new Error(`Instance ${instanceId} is not connected`);
-
-            const fileExtension = path.extname(uploadedFilePath).toLowerCase();
-
-            console.log('File uploaded at:', uploadedFilePath);
-
-            // Prepare the message payload
-            let messagePayload = { caption };
-            const media = await prepareWAMessageMedia({ url: uploadedFilePath }, { upload: instanceSock.upload });
-
-            // Determine the type of media to send
-            if (fileExtension === '.mp3') {
-                messagePayload.audio = media; // Send as audio
-            } else if (fileExtension === '.mp4') {
-                messagePayload.video = media; // Send as video
-            } else {
-                messagePayload.document = media; // Treat as document
-            }
-
-            // Send the message to all phone numbers
-            for (const number of phoneNumbers) {
-                const jid = `${number}@s.whatsapp.net`;
-                await instanceSock.sendMessage(jid, messagePayload);
-            }
-
-            // Log media message as sent (replace with your DB logic)
-            await logMediaMessageToDB(instanceId, phoneNumbers, message, uploadedFilePath, caption, req.body.schedule_time, 'success');
-
-            res.send({
-                message: 'Media messages sent successfully!',
-                filePath: uploadedFilePath
-            });
-        });
-
-        req.pipe(busboy);
-
+        res.send('Media messages sent successfully!');
     } catch (error) {
-        console.error(`Failed to send media message for instance ${instanceId}:`, error);
-
-        // Log the message as failed (replace with your DB logic)
-        const schedule_time = req.body.schedule_time || null;
-        await logMediaMessageToDB(instanceId, phoneNumbers, caption, null, schedule_time, 'failed');
-
-        res.status(500).send('Failed to send media message.');
+        console.error(`Error for instance ${instanceId}:`, error.message);
+        res.status(500).send(error.message);
     }
 });
 
