@@ -1,16 +1,17 @@
 // index.js
 
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
-const { prepareWAMessageMedia } = require('@adiwajshing/baileys'); // Example import
+// const { prepareWAMessageMedia } = require('@adiwajshing/baileys'); // Example import
 const express = require('express');
 const qrcode = require('qrcode');
 const bodyParser = require('body-parser');
 const mysql = require('mysql2/promise');
 const fs = require('fs');
 const path = require('path');
-const Busboy = require('busboy');
 
-const multer = require('multer');
+// const Busboy = require('busboy');
+// const multer = require('multer');
+
 const fileUpload = require('express-fileupload');
 const csvParser = require('csv-parser');
 
@@ -20,8 +21,9 @@ app.use(express.json({ limit: '10mb' }));
 const PORT = process.env.PORT || 9999;
 
 // Middleware to parse URL-encoded form data
-app.use(express.urlencoded({ limit: '10mb', extended: true }));
+app.use(express.urlencoded({ extended: true }));
 app.use(fileUpload());
+// app.use(express.static('uploads'));
 
 let instances = {}; // Store sockets for multiple instances
 
@@ -102,17 +104,60 @@ async function logMessageToDB(instanceId, numbers, message, status) {
     await connection.end();
 }
 
-// Function to log sent media messages to database
-async function logMediaMessageToDB(instanceId, numbers, message, mediaPath, caption, schedule_time, status) {
-    const connection = await mysql.createConnection(dbConfig);
-    const query = `INSERT INTO scheduled_messages (instance_id, recipient, message, media, caption, schedule_time, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, NOW());`;
 
-    for (const number of numbers) {
-        await connection.execute(query, [instanceId, number, message, mediaPath, caption, schedule_time, status]);
+const formatScheduledAt = (scheduledAt) => {
+    if (!scheduledAt) return null; // Return null for missing or undefined values
+
+    const date = new Date(scheduledAt);
+    if (isNaN(date.getTime())) {
+        console.error('Invalid date provided:', scheduledAt);
+        return null; // Return null if the date is invalid
     }
-    await connection.end();
-}
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+
+    return `${year}-${month}-${day}T${hours}:${minutes}`; // ISO 8601 format
+};
+
+const logMediaMessageToDB = async (instanceId, phoneNumbers, message, filePath, caption, scheduleTime, message_sent) => {
+    const connection = await mysql.createConnection(dbConfig);
+
+    const query = `
+        INSERT INTO media_messages (instance_id, recipient, message, media, caption, schedule_time, message_sent, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW());
+    `;
+
+    const formattedScheduleTime = formatScheduledAt(scheduleTime);
+    const values = [
+        instanceId || 'default', // Default to 'default' for instance_id if null
+        Array.isArray(phoneNumbers) ? phoneNumbers.join(',') : '', // Ensure it's a comma-separated string
+        message || '', // Default to empty string for message
+        filePath || '', // Default to empty string for filePath
+        caption || '', // Default to empty string for caption
+        formattedScheduleTime, // Pass formatted time or null
+        message_sent || 'success' // Default to 'success' for status
+    ];
+
+    try {
+        await connection.execute(query, values);
+        console.log('Message logged successfully:', values);
+    } catch (error) {
+        console.error('Failed to log message to DB:', {
+            error: error.message,
+            code: error.code,
+            sqlState: error.sqlState,
+            sqlMessage: error.sqlMessage,
+            values,
+        });
+    } finally {
+        await connection.end();
+    }
+};
+
 
 // Function to send scheduled messages
 async function sendScheduledMessages() {
@@ -120,7 +165,7 @@ async function sendScheduledMessages() {
 
     // Fetch pending messages scheduled for delivery
     const [rows] = await connection.execute(
-        `SELECT * FROM scheduled_messages WHERE status = 'pending' AND schedule_time <= NOW()`
+        `SELECT * FROM scheduled_messages WHERE message_sent = 'pending' AND schedule_time <= NOW()`
     );
 
     for (const message of rows) {
@@ -133,14 +178,14 @@ async function sendScheduledMessages() {
 
             // Update status to 'sent'
             await connection.execute(
-                `UPDATE scheduled_messages SET status = 'sent' WHERE id = ?`,
+                `UPDATE scheduled_messages SET message_sent = 'sent' WHERE id = ?`,
                 [message.id]
             );
             console.log(`Message sent to ${message.recipient}`);
         } catch (error) {
             console.error(`Failed to send message to ${message.recipient}:`, error);
             await connection.execute(
-                `UPDATE scheduled_messages SET status = 'failed' WHERE id = ?`,
+                `UPDATE scheduled_messages SET message_sent = 'failed' WHERE id = ?`,
                 [message.id]
             );
         }
@@ -483,19 +528,19 @@ app.get('/:instanceId/post', async (req, res) => {
                     <form action="/${instanceId}/send-media" method="POST" enctype="application/x-www-form-urlencoded" style="${formStyle}">
                         <label for="numbers" style="${labelStyle}">Phone Numbers (comma separated):</label>
                         <input type="text" id="numbers" name="numbers" required style="${inputStyle}">
-                        
+
                         <label for="message" style="${labelStyle}">Message:</label>
                         <textarea id="message" name="message" required style="${inputStyle}"></textarea>
-                        
+
                         <label for="filePath" style="${labelStyle}">Media File Path:</label>
                         <input type="text" id="filePath" name="filePath" readonly required style="${inputStyle}">
-                        
+
                         <label for="caption" style="${labelStyle}">Caption (optional):</label>
                         <input type="text" id="caption" name="caption" style="${inputStyle}">
-                        
+
                         <label for="schedule_time" style="${labelStyle}">Scheduled time (optional):</label>
                         <input type="datetime-local" id="schedule_time" name="schedule_time" style="${inputStyle}">
-                        
+
                         <button type="submit" style="${btnStyle}">Schedule Message</button>
                     </form>
     
@@ -505,7 +550,7 @@ app.get('/:instanceId/post', async (req, res) => {
                         const uploadButton = document.getElementById('uploadButton');
                         const filePathInput = document.getElementById('filePath');
                         const filePathDisplay = document.getElementById('filePathDisplay');
-    
+
                         uploadButton.addEventListener('click', async () => {
                             const formData = new FormData(uploadForm);
                             try {
@@ -513,11 +558,11 @@ app.get('/:instanceId/post', async (req, res) => {
                                     method: 'POST',
                                     body: formData,
                                 });
-    
+
                                 if (!response.ok) {
                                     throw new Error('Failed to upload file');
                                 }
-    
+
                                 const { filePath } = await response.json();
                                 filePathInput.value = filePath;
                                 filePathDisplay.textContent = "File uploaded successfully: " + filePath;
@@ -543,67 +588,139 @@ app.get('/:instanceId/post', async (req, res) => {
 }); 
 
 
-// Handle sending media messages
-
-// Configure multer for file uploads
-const upload = multer({
-    dest: './uploads/media/',
-    limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB limit
-});
-
 // Endpoint for uploading the file
-app.post('/:instanceId/upload-media', upload.single('file'), async (req, res) => {
-    const uploadedFile = req.file;
+app.post('/:instanceId/upload-media', async (req, res) => {
+    const uploadedFile = req.files?.file;
 
     if (!uploadedFile) {
         return res.status(400).send('No file uploaded.');
     }
 
-    const fileExtension = path.extname(uploadedFile.originalname).toLowerCase();
-    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.mp4', '.avi', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.mp3'];
+    const fileExtension = path.extname(uploadedFile.name).toLowerCase();
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.mp4', '.mp3', '.pdf', '.doc', '.docx', '.xls', '.xlsx'];
 
     if (!allowedExtensions.includes(fileExtension)) {
-        await fs.unlink(uploadedFile.path); // Remove the unsupported file
         return res.status(400).send('Unsupported file format.');
     }
 
-    const filePath = `uploads/media/${uploadedFile.filename}`;
-    res.json({ filePath });
+    const uploadPath = path.join(__dirname, 'uploads', 'media', uploadedFile.name);
+
+    try {
+        await uploadedFile.mv(uploadPath);
+        res.json({ filePath: uploadPath });
+    } catch (error) {
+        console.error('Error saving file:', error);
+        res.status(500).send('File upload failed.');
+    }
 });
+
 
 // Handle sending media messages
 app.post('/:instanceId/send-media', async (req, res) => {
     const instanceId = req.params.instanceId;
     const phoneNumbers = req.body.numbers.split(',').map(num => num.trim());
-    const caption = req.body.caption || '';
-    const filePath = req.body.filePath;
+    const caption = req.body.caption || ''; // Caption is optional
+    const filePath = req.body.filePath; // This should be the path returned from the upload endpoint
+    const scheduleTime = req.body.schedule_time || null; // Schedule time is optional
+    const messageContent = req.body.message || ''; // Text message content is required here.
+    const markReadStatus = req.body.markRead || true; // Default is to mark messages as read
 
-    if (!filePath || !(await fs.stat(filePath).catch(() => false))) {
+    // Check if filePath is valid
+    try {
+        if (!filePath) throw new Error('File path is missing.');
+        await fs.promises.stat(filePath); // Ensures the file exists
+    } catch (error) {
+        console.error('File path check error:', error);
         return res.status(400).send('Invalid or missing file path.');
     }
 
-    const fileExtension = path.extname(filePath).toLowerCase();
+    // Validate and format scheduleTime
+    const formattedScheduleTime = formatScheduledAt(scheduleTime);
+    if (scheduleTime && !formattedScheduleTime) {
+        return res.status(400).send('Invalid schedule time provided.');
+    }
+
+    const fileExtension = path.extname(filePath).toLowerCase(); // Extract file extension
+    console.log(`File extension detected: ${fileExtension}`);
+
     try {
         const instanceSock = instances[instanceId]?.sock;
         if (!instanceSock) throw new Error(`Instance ${instanceId} is not connected`);
 
-        const media = await prepareWAMessageMedia({ url: filePath }, { upload: instanceSock.upload });
-        const messagePayload = fileExtension === '.mp3' ? { audio: media, caption } :
-                               fileExtension === '.mp4' ? { video: media, caption } :
-                               { document: media, caption };
+        let messagePayload;
+
+        // Handling media message based on file extension
+        if (['.jpg', '.jpeg', '.png'].includes(fileExtension)) {
+            console.log('Image file detected');
+            const imageBuffer = await fs.promises.readFile(filePath);
+            messagePayload = { image: imageBuffer, caption: `${messageContent}\n${caption}` }; // Append messageContent to caption
+        }  
+
+        else if (['.pdf', '.doc', '.docx', '.xls', '.xlsx'].includes(fileExtension)) {
+            console.log('Document file detected');
+            const documentBuffer = await fs.promises.readFile(filePath);
+            messagePayload = { document: documentBuffer, caption: `${messageContent}\n${caption}` };
+        } 
+
+        else if (['.mp3'].includes(fileExtension)) {
+            console.log('Audio file detected');
+            const audioBuffer = await fs.promises.readFile(filePath);
+            messagePayload = {
+                audio: audioBuffer,
+                mimetype: 'audio/mpeg',
+                ptt: true, // Set to true if sending as a voice note
+                caption: `${messageContent}\n${caption}`
+            };
+        } 
+
+        else if (['.mp4'].includes(fileExtension)) {
+            console.log('Video file detected');
+            const videoBuffer = await fs.promises.readFile(filePath);
+            messagePayload = {
+                video: videoBuffer,
+                mimetype: 'video/mp4', // Ensure the correct MIME type is set
+                caption: `${messageContent}\n${caption}`,
+                gifPlayback: false // Set to true for GIF-like behavior
+            };
+        } 
+        
+        else {
+            throw new Error('Unsupported media type.');
+        }
 
         for (const number of phoneNumbers) {
             const jid = `${number}@s.whatsapp.net`;
-            await instanceSock.sendMessage(jid, messagePayload);
+            let message_sent = 'success';
+            try {
+                console.log(`Sending message to: ${jid}`, messagePayload);
+                const sentMessage = await instanceSock.sendMessage(jid, messagePayload);
+
+                // Mark the chat read/unread based on markReadStatus
+                if (sentMessage && sentMessage.key) {
+                    const lastMsgInChat = sentMessage.message; // Use the sent message as the last message reference
+                    await instanceSock.chatModify(
+                        { markRead: markReadStatus, lastMessages: [lastMsgInChat] },
+                        jid
+                    );
+                }
+            } catch (err) {
+                console.error(`Failed to send message to ${jid}:`, err.message);
+                message_sent = 'failed';
+            }
+            // Log the media message to the database for each recipient
+            await logMediaMessageToDB(instanceId, [number], messageContent, filePath, caption, formattedScheduleTime, message_sent);
         }
 
         res.send('Media messages sent successfully!');
     } catch (error) {
         console.error(`Error for instance ${instanceId}:`, error.message);
+
+        // Log the media message to the database with 'failed' status for all recipients
+        await logMediaMessageToDB(instanceId, phoneNumbers, null, filePath, caption, formattedScheduleTime, 'failed');
+
         res.status(500).send(error.message);
     }
 });
-
 
 // Handle sending text messages
 app.post('/:instanceId/send-message', async (req, res) => {
