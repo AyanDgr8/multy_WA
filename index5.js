@@ -9,6 +9,8 @@ const mysql = require('mysql2/promise');
 const fs = require('fs');
 const path = require('path');
 
+// const Busboy = require('busboy');
+// const multer = require('multer');
 
 const fileUpload = require('express-fileupload');
 const csvParser = require('csv-parser');
@@ -90,39 +92,43 @@ async function saveInstanceToDB(instanceId, status) {
     await connection.end();
 }
 
-// Function to log sent messages to the database
-async function logMessageToDB(instanceId, numbers, message, status, messageDelivered = 'unread') {
+
+// Function to save CSV data to the database
+async function saveCSVDataToDB(instanceId, csvData) {
     const connection = await mysql.createConnection(dbConfig);
-    const query = `
-        INSERT INTO messages (instance_id, recipient, message, status, sent_at, message_delivered)
-        VALUES (?, ?, ?, ?, NOW(), ?);
-    `;
+    try {
+        for (const row of csvData) {
+            const phoneNumbers = row.phone_numbers || null; // Set to null if undefined
+            const name = row.name || null; // Set to null if undefined
+
+            // Only insert if phoneNumbers is defined
+            if (phoneNumbers !== null && name !== null) {
+                try {
+                    await connection.execute('INSERT INTO phoneList (phone_numbers, name, created_at, instance_id) VALUES (?, ?, NOW(), ?)', [phoneNumbers, name, instanceId]);
+                } catch (insertError) {
+                    console.error('Error inserting row into the database:', insertError);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error inserting data into the database:', error);
+    } finally {
+        await connection.end();
+    }
+}
+
+// Function to log sent messages to database
+async function logMessageToDB(instanceId, numbers, message, status) {
+    const connection = await mysql.createConnection(dbConfig);
+    const query = `INSERT INTO messages (instance_id, recipient, message, status, sent_at)
+    VALUES (?, ?, ?, ?, NOW());`;
 
     for (const number of numbers) {
-        await connection.execute(query, [instanceId, number, message, status, messageDelivered]);
+        await connection.execute(query, [instanceId, number, message, status]);
     }
     await connection.end();
 }
 
-
-// Function to update the delivery status in the database
-async function updateMessageDeliveryStatus(instanceId, recipient, deliveryStatus) {
-    const connection = await mysql.createConnection(dbConfig);
-    const query = `
-        UPDATE messages
-        SET message_delivered = ?
-        WHERE instance_id = ? AND recipient = ? AND message_delivered = 'unread';
-    `;
-
-    await connection.execute(query, [deliveryStatus, instanceId, recipient]);
-    await connection.end();
-}
-
-// Function to mark a chat as read/unread
-async function markChatReadOrUnread(sock, jid, markRead = true) {
-    const lastMsgInChat = await getLastMessageInChat(jid); // You need to implement this function
-    await sock.chatModify({ markRead, lastMessages: [lastMsgInChat] }, jid);
-}
 
 const formatScheduledAt = (scheduledAt) => {
     if (!scheduledAt) return null; // Return null for missing or undefined values
@@ -418,11 +424,16 @@ app.get('/:instanceId/send', async (req, res) => {
                 </div>
                 <!-- File Upload Form -->
                 <form id="uploadForm" action="/${instanceId}/upload-csv" method="POST" enctype="multipart/form-data" style="display: inline-block;">
-                    <input type="file" name="csvFile" id="csvFile" >
+                    <input type="file" name="csvFile" id="csvFile" style="display: none;" required>
                     <button type="button" style="${uploadStyle}" onclick="document.getElementById('csvFile').click();">Upload Phone Numbers</button>
                 </form>
 
             </div>
+            <script>
+
+
+
+            </script>
         `);
     } else {
         res.send(`
@@ -434,74 +445,16 @@ app.get('/:instanceId/send', async (req, res) => {
     }
 });
 
-
-// Handle sending text messages
-app.post('/:instanceId/send-message', async (req, res) => {
-    const instanceId = req.params.instanceId;
-    const phoneNumbers = req.body.numbers.split(',').map((num) => num.trim());
-    const message = req.body.message;
-
-    try {
-        const instanceSock = instances[instanceId]?.sock;
-        if (!instanceSock) throw new Error(`Instance ${instanceId} is not connected`);
-
-        for (const number of phoneNumbers) {
-            const jid = `${number}@s.whatsapp.net`;
-
-            // Send the message and get the result
-            const result = await instanceSock.sendMessage(jid, { text: message });
-
-            if (result && result.id) {
-                // Log the message with initial status as 'unread'
-                await logMessageToDB(instanceId, [number], message, 'success', 'unread');
-
-                // Simulate marking as read/unread based on user action
-                setTimeout(async () => {
-                    try {
-                        // Mark chat as read
-                        await markChatReadOrUnread(instanceSock, jid, true);
-
-                        // Update the database to reflect the read status
-                        await updateMessageDeliveryStatus(instanceId, number, 'read');
-                    } catch (error) {
-                        console.error(`Failed to mark chat as read for ${jid}:`, error);
-                    }
-                }, 5000); // Simulate a 5-second delay
-            } else {
-                // Log the message as failed
-                await logMessageToDB(instanceId, [number], message, 'failed', 'unread');
-            }
-        }
-
-        res.send('Text messages sent successfully!');
-    } catch (error) {
-        console.error(`Failed to send text message for instance ${instanceId}:`, error);
-        await logMessageToDB(instanceId, phoneNumbers, message, 'failed', 'unread');
-        res.status(500).send('Failed to send text message.');
-    }
-});
-
-// Function to get the last message in a chat
-async function getLastMessageInChat(jid) {
-    // Implement logic to retrieve the last message in a chat
-    // Example placeholder: You will need to use WhatsApp's API or database to get this info
-    return { key: { remoteJid: jid, id: 'last-message-id' } };
-}
-
-
-
-
-// ************
 // Serve the form to schedule messages for a specific instance
 app.get('/:instanceId/post', async (req, res) => {
     const instanceId = req.params.instanceId;
-
+    
     const bodyStyle = `
         margin: 0;
         padding: 0;
         font-family: Verdana, Arial, Helvetica, sans-serif;
         background-color: black;
-        color: white;
+        color:white;
     `;
     const containerStyle = `
         width: 60%;
@@ -513,7 +466,7 @@ app.get('/:instanceId/post', async (req, res) => {
         padding: 2rem;
         font-family: Verdana, Arial, Helvetica, sans-serif;
         background-color: black;
-        color: white;
+        color:white;
     `;
     const headerStyle = `
         background-color: #364C63;
@@ -565,26 +518,33 @@ app.get('/:instanceId/post', async (req, res) => {
         text-align: center;
         padding: 15px;
         font-size: 0.85rem;
-        margin: auto;
+        margin:auto;
         margin-top: 20px;
     `;
-
 
     if (instances[instanceId]?.isAuthenticated) {
         res.send(`
             <div style="${bodyStyle}">
                 <div style="${containerStyle}">
                     <h1 style="${headerStyle}">Schedule Message for Instance: ${instanceId}</h1>
-
-                    <!-- File Upload Form -->
+    
+                    <!-- Form to upload media -->
                     <form id="uploadForm" enctype="multipart/form-data" style="${formStyle}">
                         <label for="file" style="${labelStyle}">Upload Media File:</label>
                         <input type="file" id="file" name="file" required style="${inputStyle}">
                         <button type="button" id="uploadButton" style="${btnStyle}">Upload File</button>
                         <p id="filePathDisplay"></p>
                     </form>
+    
 
-                    <!-- Schedule Message Form -->
+                    <!-- CSV Upload for Phone Numbers -->
+                    <form id="csvUploadForm" enctype="multipart/form-data" style="${formStyle}">
+                        <label for="csvFile" style="${labelStyle}">Upload CSV of Phone Numbers:</label>
+                        <input type="file" id="csvFile" name="csvFile" required style="${inputStyle}">
+                        <button type="button" id="csvUploadButton" style="${btnStyle}">Upload CSV</button>
+                    </form>
+
+                    <!-- Form to schedule message -->
                     <form action="/${instanceId}/send-media" method="POST" enctype="application/x-www-form-urlencoded" style="${formStyle}">
                         <label for="numbers" style="${labelStyle}">Phone Numbers (comma separated):</label>
                         <input type="text" id="numbers" name="numbers" required style="${inputStyle}">
@@ -598,53 +558,87 @@ app.get('/:instanceId/post', async (req, res) => {
                         <label for="caption" style="${labelStyle}">Caption (optional):</label>
                         <input type="text" id="caption" name="caption" style="${inputStyle}">
 
-                        <label for="schedule_time" style="${labelStyle}">Scheduled Time (optional):</label>
+                        <label for="schedule_time" style="${labelStyle}">Scheduled time (optional):</label>
                         <input type="datetime-local" id="schedule_time" name="schedule_time" style="${inputStyle}">
 
                         <button type="submit" style="${btnStyle}">Schedule Message</button>
                     </form>
+    
+                    <script>
+                        const uploadForm = document.getElementById('uploadForm');
+                        const fileInput = document.getElementById('file');
+                        const uploadButton = document.getElementById('uploadButton');
+                        const filePathInput = document.getElementById('filePath');
+                        const filePathDisplay = document.getElementById('filePathDisplay');
 
-                    <!-- CSV Upload for Phone Numbers -->
-                    <form id="csvUploadForm" enctype="multipart/form-data" style="${formStyle}">
-                        <label for="csvFile" style="${labelStyle}">Upload CSV of Phone Numbers:</label>
-                        <input type="file" id="csvFile" name="csvFile" required style="${inputStyle}">
-                        <button type="button" id="csvUploadButton" style="${btnStyle}">Upload CSV</button>
-                    </form>
+                        uploadButton.addEventListener('click', async () => {
+                            const formData = new FormData(uploadForm);
+                            try {
+                                const response = await fetch('/${instanceId}/upload-media', {
+                                    method: 'POST',
+                                    body: formData,
+                                });
+
+                                if (!response.ok) {
+                                    throw new Error('Failed to upload file');
+                                }
+
+                                const { filePath } = await response.json();
+                                filePathInput.value = filePath;
+                                filePathDisplay.textContent = "File uploaded successfully: " + filePath;
+                            } catch (error) {
+                                filePathDisplay.textContent = "Upload failed: " + error.message;
+                            }
+                        });
+
+                        document.getElementById('uploadButton').addEventListener('click', async () => {
+                            const formData = new FormData(document.getElementById('uploadForm'));
+                            try {
+                                const response = await fetch('/${instanceId}/upload-media', {
+                                    method: 'POST',
+                                    body: formData,
+                                });
+                                const result = await response.json();
+                                document.getElementById('filePath').value = result.filePath;
+                                document.getElementById('filePathDisplay').textContent = "File uploaded successfully!";
+                            } catch (error) {
+                                alert("Media upload failed: " + error.message);
+                            }
+                        });
+
+                        document.getElementById('csvUploadButton').addEventListener('click', async () => {
+                            const formData = new FormData(csvUploadForm);
+                            try {
+                                const response = await fetch('/${instanceId}/upload-csv', {
+                                    method: 'POST',
+                                    body: formData,
+                                });
+
+                                if (!response.ok) {
+                                    throw new Error('Failed to upload CSV file');
+                                }
+
+                                const result = await response.json(); // Parse JSON response
+                                console.log('CSV upload result:', result); // Log the response from the server
+
+                                if (result.phoneNumbers && result.phoneNumbers.length > 0) {
+                                    document.getElementById('numbers').value = result.phoneNumbers.join(', '); // Populate the input field
+                                    alert("Phone numbers populated successfully.");
+                                } else {
+                                    alert("No phone numbers found in the CSV.");
+                                }
+                            } catch (error) {
+                                alert("An error occurred during CSV upload: " + error.message);
+                            }
+                        });
+
+
+                    </script>
                 </div>
                 <div style="${footerStyle}">
                     Powered by MultyComm &copy; 2024
                 </div>
             </div>
-            <script>
-                document.getElementById('uploadButton').addEventListener('click', async () => {
-                    const formData = new FormData(document.getElementById('uploadForm'));
-                    try {
-                        const response = await fetch('/${instanceId}/upload-media', {
-                            method: 'POST',
-                            body: formData,
-                        });
-                        const result = await response.json();
-                        document.getElementById('filePath').value = result.filePath;
-                        document.getElementById('filePathDisplay').textContent = "File uploaded successfully!";
-                    } catch (error) {
-                        alert("Media upload failed: " + error.message);
-                    }
-                });
-
-                document.getElementById('csvUploadButton').addEventListener('click', async () => {
-                    const formData = new FormData(document.getElementById('csvUploadForm'));
-                    try {
-                        const response = await fetch('/${instanceId}/upload-csv', {
-                            method: 'POST',
-                            body: formData,
-                        });
-                        const result = await response.json();
-                        document.getElementById('numbers').value = result.phoneNumbers.join(', ');
-                    } catch (error) {
-                        alert("CSV upload failed: " + error.message);
-                    }
-                });
-            </script>
         `);
     } else {
         res.send(`
@@ -654,33 +648,7 @@ app.get('/:instanceId/post', async (req, res) => {
             </div>
         `);
     }
-});
-
-// Endpoint for uploading the csv file for phone numbers 
-app.post('/:instanceId/upload-phone', async (req, res) => {
-    const uploadedFile = req.files?.file;
-
-    if (!uploadedFile) {
-        return res.status(400).send('No file uploaded.');
-    }
-
-    const fileExtension = path.extname(uploadedFile.name).toLowerCase();
-    const allowedExtensions = ['.csv', '.xlsx'];
-
-    if (!allowedExtensions.includes(fileExtension)) {
-        return res.status(400).send('Unsupported file format.');
-    }
-
-    const uploadPath = path.join(__dirname, 'uploads', 'list', uploadedFile.name);
-
-    try {
-        await uploadedFile.mv(uploadPath);
-        res.json({ filePath: uploadPath });
-    } catch (error) {
-        console.error('Error saving file:', error);
-        res.status(500).send('File upload failed.');
-    }
-});
+}); 
 
 
 // Endpoint for uploading the file
@@ -709,6 +677,7 @@ app.post('/:instanceId/upload-media', async (req, res) => {
     }
 });
 
+
 // Handle sending media messages
 app.post('/:instanceId/send-media', async (req, res) => {
     const instanceId = req.params.instanceId;
@@ -717,7 +686,6 @@ app.post('/:instanceId/send-media', async (req, res) => {
     const filePath = req.body.filePath; // This should be the path returned from the upload endpoint
     const scheduleTime = req.body.schedule_time || null; // Schedule time is optional
     const messageContent = req.body.message || ''; // Text message content is required here.
-    const markReadStatus = req.body.markRead || true; // Default is to mark messages as read
 
     // Check if filePath is valid
     try {
@@ -787,16 +755,7 @@ app.post('/:instanceId/send-media', async (req, res) => {
             let message_sent = 'success';
             try {
                 console.log(`Sending message to: ${jid}`, messagePayload);
-                const sentMessage = await instanceSock.sendMessage(jid, messagePayload);
-
-                // Mark the chat read/unread based on markReadStatus
-                if (sentMessage && sentMessage.key) {
-                    const lastMsgInChat = sentMessage.message; // Use the sent message as the last message reference
-                    await instanceSock.chatModify(
-                        { markRead: markReadStatus, lastMessages: [lastMsgInChat] },
-                        jid
-                    );
-                }
+                await instanceSock.sendMessage(jid, messagePayload);
             } catch (err) {
                 console.error(`Failed to send message to ${jid}:`, err.message);
                 message_sent = 'failed';
@@ -816,118 +775,142 @@ app.post('/:instanceId/send-media', async (req, res) => {
     }
 });
 
-// Endpoint to upload CSV file
-app.get('/:instanceId/upload',async (req, res) => {
+// Handle sending text messages
+app.post('/:instanceId/send-message', async (req, res) => {
     const instanceId = req.params.instanceId;
+    const phoneNumbers = req.body.numbers.split(',').map((num) => num.trim());
+    const message = req.body.message;
 
-    const bodyStyle=`
-        margin: 0;
-        padding: 0;
-        font-family: Verdana, Arial, Helvetica, sans-serif;
-        background-color: black;
-        color:white;
-    `;
-    const containerStyle = `
-        width: 60%;
-        margin: 5rem auto;
-        border-radius: 10px;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
-        overflow: hidden;
-        position: relative;
-        padding: 2rem;
-        font-family: Verdana, Arial, Helvetica, sans-serif;
-        background-color: black;
-        color:white;
-    `;
-    const headerStyle = `
-        background-color: #364C63;
-        color: white;
-        padding: 15px 20px;
-        text-align: center;
-        font-size: 1.5rem;
-        font-weight: 700;
-        letter-spacing: 1px;
-        border-bottom: 3px solid #EF6F53;
-    `;
-    const uploadStyle= `
-        background-color: #EF6F53;
-        color: white;
-        border: none;
-        border-radius: 5px;
-        padding: 10px; 
-        font-size: 0.9rem;
-        font-weight: 500;
-        cursor: pointer;
-        margn:auto;
-        text-align:center;
-    `;
-    const footerStyle = `
-        text-align: center;
-        padding: 15px;
-        font-size: 0.85rem;
-        margin:auto;
-        margin-top: 20px;
-    `;
+    try {
+        const instanceSock = instances[instanceId]?.sock;
+        if (!instanceSock) throw new Error(`Instance ${instanceId} is not connected`);
 
-    if (instances[instanceId]?.isAuthenticated) {
-        res.send(`
-            <div style="${bodyStyle}">
-                <div style="${containerStyle}">
-                    <h1 style="${headerStyle}">Scheduled Messages for Instance: ${instanceId}</h1>
-                    <!-- File Upload Form -->
-                    <form id="uploadForm" action="/${instanceId}/upload-csv" method="POST" enctype="multipart/form-data" style="display: inline-block;">
-                        <input type="file" name="csvFile" id="csvFile" style="display: none;" required>
-                        <button type="button" style="${uploadStyle}" onclick="document.getElementById('csvFile').click();">File Upload</button>
-                    </form>
-                </div>
-                <div style="${footerStyle}">
-                    Powered by MultyComm &copy; 2024
-                </div>
+        for (const number of phoneNumbers) {
+        const jid = `${number}@s.whatsapp.net`;
+            await instanceSock.sendMessage(jid, { text: message });
+        }
 
-            </div>
-            <script>
-                function uploadCSV(instanceId) {
-                    const input = document.createElement('input');
-                    input.type = 'file';
-                    input.accept = '.csv';
-                    input.onchange = async (event) => {
-                        const file = event.target.files[0];
-                        if (!file) return;
-
-                        const formData = new FormData();
-                        formData.append('csvFile', file);
-
-                        try {
-                            const response = await fetch(\`/${instanceId}/upload-csv\`, {
-                                method: 'POST',
-                                body: formData,
-                            });
-
-                            if (response.ok) {
-                                alert('CSV file uploaded and processed successfully!');
-                            } else {
-                                alert('Failed to upload CSV file.');
-                            }
-                        } catch (error) {
-                            console.error('Error uploading CSV:', error);
-                            alert('Error uploading CSV file.');
-                        }
-                    };
-                    input.click();
-                }
-            </script>
-        `);
-    } else {
-        res.send(`
-            <div style="width: 60%; margin: 4rem auto; background-color: white; border-radius: 10px; padding: 2rem;">
-                <h1 style="text-align: center; color: #364C63;">Instance Not Authenticated</h1>
-                <p style="text-align: center;">Please scan the QR code first at <a href="/${instanceId}/qrcode">/${instanceId}/qrcode</a>.</p>
-            </div>
-        `);
+        await logMessageToDB(instanceId, phoneNumbers, message, 'success');
+        res.send('Text messages sent successfully!');
+    } catch (error) {
+        console.error(`Failed to send text message for instance ${instanceId}:`, error);
+        await logMessageToDB(instanceId, phoneNumbers, message, 'failed');
+    res.status(500).send('Failed to send text message.');
     }
 });
 
-// // Handle to upload CSV file
+// // Endpoint to upload CSV file
+// app.get('/:instanceId/upload',async (req, res) => {
+//     const instanceId = req.params.instanceId;
+
+//     const bodyStyle=`
+//         margin: 0;
+//         padding: 0;
+//         font-family: Verdana, Arial, Helvetica, sans-serif;
+//         background-color: black;
+//         color:white;
+//     `;
+//     const containerStyle = `
+//         width: 60%;
+//         margin: 5rem auto;
+//         border-radius: 10px;
+//         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+//         overflow: hidden;
+//         position: relative;
+//         padding: 2rem;
+//         font-family: Verdana, Arial, Helvetica, sans-serif;
+//         background-color: black;
+//         color:white;
+//     `;
+//     const headerStyle = `
+//         background-color: #364C63;
+//         color: white;
+//         padding: 15px 20px;
+//         text-align: center;
+//         font-size: 1.5rem;
+//         font-weight: 700;
+//         letter-spacing: 1px;
+//         border-bottom: 3px solid #EF6F53;
+//     `;
+//     const uploadStyle= `
+//         background-color: #EF6F53;
+//         color: white;
+//         border: none;
+//         border-radius: 5px;
+//         padding: 10px; 
+//         font-size: 0.9rem;
+//         font-weight: 500;
+//         cursor: pointer;
+//         margn:auto;
+//         text-align:center;
+//     `;
+//     const footerStyle = `
+//         text-align: center;
+//         padding: 15px;
+//         font-size: 0.85rem;
+//         margin:auto;
+//         margin-top: 20px;
+//     `;
+
+//     if (instances[instanceId]?.isAuthenticated) {
+//         res.send(`
+//             <div style="${bodyStyle}">
+//                 <div style="${containerStyle}">
+//                     <h1 style="${headerStyle}">Scheduled Messages for Instance: ${instanceId}</h1>
+//                     <!-- File Upload Form -->
+//                     <form id="uploadForm" action="/${instanceId}/upload-csv" method="POST" enctype="multipart/form-data" style="display: inline-block;">
+//                         <input type="file" name="csvFile" id="csvFile" style="display: none;" required>
+//                         <button type="button" style="${uploadStyle}" onclick="document.getElementById('csvFile').click();">File Upload</button>
+//                     </form>
+//                 </div>
+//                 <div style="${footerStyle}">
+//                     Powered by MultyComm &copy; 2024
+//                 </div>
+
+//             </div>
+//             <script>
+//                 function uploadCSV(instanceId) {
+//                     const input = document.createElement('input');
+//                     input.type = 'file';
+//                     input.accept = '.csv';
+//                     input.onchange = async (event) => {
+//                         const file = event.target.files[0];
+//                         if (!file) return;
+
+//                         const formData = new FormData();
+//                         formData.append('csvFile', file);
+
+//                         try {
+//                             const response = await fetch(\`/${instanceId}/upload-csv\`, {
+//                                 method: 'POST',
+//                                 body: formData,
+//                             });
+
+//                             if (response.ok) {
+//                                 alert('CSV file uploaded and processed successfully!');
+//                             } else {
+//                                 alert('Failed to upload CSV file.');
+//                             }
+//                         } catch (error) {
+//                             console.error('Error uploading CSV:', error);
+//                             alert('Error uploading CSV file.');
+//                         }
+//                     };
+//                     input.click();
+//                 }
+//             </script>
+//         `);
+//     } else {
+//         res.send(`
+//             <div style="width: 60%; margin: 4rem auto; background-color: white; border-radius: 10px; padding: 2rem;">
+//                 <h1 style="text-align: center; color: #364C63;">Instance Not Authenticated</h1>
+//                 <p style="text-align: center;">Please scan the QR code first at <a href="/${instanceId}/qrcode">/${instanceId}/qrcode</a>.</p>
+//             </div>
+//         `);
+//     }
+// });
+
+// Handle to upload CSV file
 app.post('/:instanceId/upload-csv', async (req, res) => {
     const instanceId = req.params.instanceId;
 
@@ -936,21 +919,47 @@ app.post('/:instanceId/upload-csv', async (req, res) => {
     }
 
     const file = req.files.csvFile;
-    const filePath = path.join(__dirname, 'uploads', file.name);
+    const uploadsDir = path.join(__dirname, 'uploads');
+    const listDir = path.join(uploadsDir, 'list');
+    const filePath = path.join(listDir, file.name);
+
+    // Ensure directories exist
+    if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir);
+    }
+    if (!fs.existsSync(listDir)) {
+        fs.mkdirSync(listDir);
+    }
 
     // Save uploaded file temporarily
-    if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
     await file.mv(filePath);
 
     // Parse CSV file
     const csvData = [];
     fs.createReadStream(filePath)
         .pipe(csvParser())
-        .on('data', (row) => csvData.push(row))
+        .on('data', (row) => {
+            // Trim keys to remove any extra spaces
+            const trimmedRow = Object.fromEntries(
+                Object.entries(row).map(([key, value]) => [key.trim(), value])
+            );
+    
+            console.log('Parsed row:', trimmedRow); // Debugging log
+    
+            if (trimmedRow.phone_numbers && trimmedRow.name) {
+                csvData.push(trimmedRow);
+            }
+        })
         .on('end', async () => {
+            console.log('Parsed phone numbers:', csvData); // Debugging log to check extracted data
+    
+            // Call the saveCSVDataToDB function
             await saveCSVDataToDB(instanceId, csvData);
-            fs.unlinkSync(filePath); // Delete file after processing
-            res.send('Contacts and messages saved to the database successfully!');
+    
+            // Extract phone numbers and names from CSV data
+            const phoneNumbers = csvData.map(row => row.phone_numbers).filter(Boolean);
+    
+            res.json({ phoneNumbers });
         });
 });
 
